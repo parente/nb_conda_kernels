@@ -4,7 +4,7 @@ import subprocess
 import sys
 import time
 
-from os.path import exists, join, split, dirname, abspath
+from os.path import exists, join, split, dirname, abspath, basename
 
 from jupyter_client.kernelspec import (
     KernelSpecManager,
@@ -89,7 +89,8 @@ class CondaKernelSpecManager(KernelSpecManager):
                     language_envs[name] = {
                         'display_name': '{} [conda env:{}]'.format(
                             display_prefix, env_name),
-                        'executable': exe_path,
+                        'executable': basename(language_exe),
+                        'environment_path': base,
                         'language_key': language_key,
                     }
             return language_envs
@@ -106,19 +107,21 @@ class CondaKernelSpecManager(KernelSpecManager):
         r_envs = get_paths_by_env("R", "r", r, self._conda_info["envs"])
         all_envs.update(r_envs)
 
-        # We also add the root prefix into the soup
+        # We also add the root prefix into the soup along with the
+        # root conda environment path.
         root_prefix = join(self._conda_info["root_prefix"], jupyter)
         if exists(root_prefix):
             all_envs.update({
                 'conda-root-py': {
                     'display_name': 'Python [conda root]',
-                    'executable': join(self._conda_info["root_prefix"],
-                                       python),
+                    'executable': basename(python),
+                    'environment_path': self._conda_info['root_python'],
                     'language_key': 'py',
                 }
             })
         # Use Jupyter's default kernel name ('python2' or 'python3') for
-        # current env
+        # current env. This is the default environment for the notebook
+        # server so there's no reason to activate any thing here.
         if exists(join(sys.prefix, jupyter)) and exists(join(sys.prefix,
                                                              python)):
             all_envs.update({
@@ -152,14 +155,30 @@ class CondaKernelSpecManager(KernelSpecManager):
         """ Create a kernelspec for each of the envs where jupyter is installed
         """
         kspecs = {}
+        activation_tmpl = 'source "{base}/bin/activate" "{base}" && exec {args}'
+        python_args = '-m ipykernel -f {connection_file}'
+        r_args = '--save -e IRkernel::main() --args {connection_file}'
+
         for name, info in self._all_envs().items():
             executable = info['executable']
+            environment_path = info.get('environment_path')
             display_name = info['display_name']
 
             if info['language_key'] == 'py':
+                if environment_path is not None:
+                    # Wrap kernel start in a bash shell that sources the
+                    # activate script in the kernel environment and then
+                    # execs the kernel process.
+                    argv = ['bash', '-c',
+                            activation_tmpl.format(base=environment_path,
+                                                   args='{} {}'.format(executable, python_args))]
+                else:
+                    # If the kernel is in a root environment outside of conda,
+                    # just run the kernel process without activation.
+                    argv = [info['executable']] + python_args.split(' ')
+
                 kspec = {
-                    "argv": [executable, "-m", "ipykernel", "-f",
-                             "{connection_file}"],
+                    "argv": argv,
                     "display_name": display_name,
                     "language": "python",
                     "env": {},
@@ -167,9 +186,14 @@ class CondaKernelSpecManager(KernelSpecManager):
                                          "python")
                  }
             elif info['language_key'] == 'r':
+                # Wrap IRkernel start in a bash shell that sources the activate
+                # script in the kernel's conda environment and then execs the
+                # kernel process.
+                argv = ['bash', '-c',
+                        activation_tmpl.format(base=environment_path,
+                                               args='{} {}'+r_args)]
                 kspec = {
-                    "argv": [executable, "--slave", "-e", "IRkernel::main()",
-                             "--args", "{connection_file}"],
+                    "argv": argv,
                     "display_name": display_name,
                     "language": "R",
                     "env": {},

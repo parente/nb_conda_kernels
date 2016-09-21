@@ -144,7 +144,7 @@ class CondaKernelSpecManager(KernelSpecManager):
                 'conda-root-py': {
                     'display_name': 'Python [conda root]',
                     'executable': basename(python),
-                    'environment_path': self._conda_info['root_python'],
+                    'environment_path': self._conda_info['root_prefix'],
                     'language_key': 'py',
                 }
             })
